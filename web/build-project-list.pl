@@ -8,6 +8,7 @@ use LWP::Simple;
 use JSON;
 use YAML qw (Load LoadFile);
 use HTML::Template;
+use Web::Scraper;
 
 my $output_dir = shift(@ARGV) || './';
 
@@ -22,14 +23,18 @@ my $site_info = {
             my $project = shift;
             return "http://github.com/$project->{owner}/$project->{name}/";
         },
-        get_description => qr/id="repository_description" rel="repository_description_edit">(.*)<span id="read_more"/s,
+        scraper => scraper {
+            process 'id("repository_description")/p/text()', description => 'TEXT';
+        },
     },
     'gitorious' => {
         url => sub {
             my $project = shift;
             return "http://gitorious.org/$project->{name}/";
         },
-        get_description => qr/<div id="project-description" class="page">(.*?)<\/div>/s,
+        scraper => scraper {
+            process 'id("project-description")/p/text()', description => 'TEXT';
+        },
     },
 };
 
@@ -76,34 +81,32 @@ sub get_projects {
 
         $project->{url} = $home->{url}->($project);
 
-        my $project_page = get( $project->{url} );
-        if ( !$project_page ) {
-            delete $projects->{$project_name};
-            $stats->{failed}++;
-            push @{ $stats->{errors} },
-                "Error for project $project->{name} : could not get $project->{url} (project probably dead)\n";
-            next;
-        }
+        if ( my $result = $home->{scraper}->scrape ( get ( $project->{url} ) ) ) {
+            if ( my $desc = $result->{description} ) {
+                $desc =~ s/^\s+//;
+                $desc =~ s/\s+$//;
 
-        #Please forgive me for parsing html this way
-        my ($desc) = $project_page =~ $home->{get_description};
-        $desc =~ s/^\s+//;
-        $desc =~ s/\s+$//;     #trim spaces
-        $desc =~ s/^<p>//;
-        $desc =~ s/<\/p>//;    #Remove the p tag
-        if ($desc) {
-            $stats->{success}++;
-            $project->{description} = $desc;
+                $project->{description} = $desc;
+
+                $stats->{success}++;
+            }
+            else {
+                delete $projects->{$project_name};
+                $stats->{failed}++;
+                push @{ $stats->{errors} },
+                    "Could not get a description for $project->{name} from $project->{url}, that's BAD!\n";
+                $project->{description} = '';
+            }
+
+            print "$project->{description}\n\n";
         }
         else {
-            delete $projects->{$project_name};
-            $stats->{failed}++;
-            push @{ $stats->{errors} },
-                "Could not get a description for $project->{name} from $project->{url}, that's BAD!\n";
-            $project->{description} = '';
+           delete $projects->{$project_name};
+           $stats->{failed}++;
+           push @{ $stats->{errors} },
+               "Error for project $project->{name} : could not get $project->{url} (project probably dead)\n";
+           next;
         }
-        print "$project->{description}\n\n";
-
     }
     return $projects;
 }
